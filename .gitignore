@@ -1,0 +1,5 @@
+node_modules/
+
+# Скриншоты инструментов: пересоздаются `node tools/smoke-browser.mjs shots`
+# и `npm run bench`, в репозитории им делать нечего.
+shots/

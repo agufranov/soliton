@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2D-солитоны</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230b0d12'/%3E%3Cpath d='M2 24C8 24 8 10 16 10s8 14 14 14' stroke='%236fb2d2' stroke-width='3' fill='none'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #12151d;
+    --panel-2: #171b25;
+    --line: #262c3a;
+    --text: #e6e9f0;
+    --dim: #8b93a7;
+    --accent: #6fb2d2;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.45 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+    display: flex; overflow: hidden;
+  }
+
+  aside {
+    width: 330px; flex: 0 0 330px; height: 100%;
+    background: var(--panel); border-right: 1px solid var(--line);
+    padding: 18px 16px 24px; overflow-y: auto;
+  }
+  aside h1 { font-size: 16px; margin: 0 0 2px; letter-spacing: .2px; }
+  aside h1 + p { margin: 0 0 16px; color: var(--dim); font-size: 12px; }
+  h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--dim); margin: 20px 0 8px; font-weight: 600;
+  }
+
+  select, button, input[type=range] { font: inherit; color: inherit; }
+  select {
+    width: 100%; padding: 7px 9px; background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  .blurb {
+    margin: 10px 0 0; font-size: 12.5px; color: var(--dim);
+    background: var(--panel-2); border-left: 2px solid var(--accent);
+    padding: 9px 11px; border-radius: 0 6px 6px 0;
+  }
+
+  .ctl { margin-bottom: 12px; }
+  .ctl label {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 12.5px; margin-bottom: 4px;
+  }
+  .ctl .val { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .ctl .hint { font-size: 11px; color: var(--dim); margin-top: 3px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  button {
+    padding: 7px 10px; background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 6px; cursor: pointer; transition: background .12s, border-color .12s;
+  }
+  button:hover { background: #1e2330; border-color: #37405a; }
+  .preset, .kind { display: block; width: 100%; text-align: left; margin-bottom: 6px; font-size: 12.5px; }
+  .kind.on { border-color: var(--accent); color: var(--accent); }
+
+  #stats { font-size: 12px; font-variant-numeric: tabular-nums; }
+  #stats div { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid #1b2029; }
+  #stats span { color: var(--dim); }
+
+  main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px; position: relative; }
+  /* Three stacked canvases: the 2D field (CPU), the WebGPU field (GPU) and a
+     transparent overlay for the aim arrow. A canvas can only ever have one
+     context type, so switching backend means switching which one is shown. */
+  #stage {
+    position: relative; width: min(100%, calc(100vh - 40px)); aspect-ratio: 1;
+    border-radius: 10px; overflow: hidden; cursor: crosshair; touch-action: none;
+    box-shadow: 0 0 0 1px var(--line), 0 20px 60px rgba(0,0,0,.6);
+    background: #06070a;
+  }
+  #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #overlay { pointer-events: none; }
+  .off { display: none !important; }
+  #note {
+    position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+    background: rgba(10,12,18,.9); border: 1px solid var(--line);
+    padding: 6px 14px; border-radius: 20px; font-size: 12.5px; color: var(--text);
+    pointer-events: none;
+  }
+  #note:empty { display: none; }
+  .legend { font-size: 11.5px; color: var(--dim); margin-top: 10px; }
+  code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 11.5px; }
+</style>
+</head>
+<body>
+
+<aside>
+  <h1>2D-солитоны</h1>
+  <p>Псевдоспектральные симуляции локализованных нелинейных волн</p>
+
+  <h2>Уравнение</h2>
+  <select id="model"></select>
+  <div class="blurb" id="blurb"></div>
+
+  <h2>Сценарии</h2>
+  <div id="presets"></div>
+
+  <h2>Что порождает клик</h2>
+  <div id="kinds"></div>
+  <div class="legend">
+    Клик — солитон на месте. Клик с протяжкой — задаёт направление
+    и величину: четверть окна = максимум.
+  </div>
+
+  <h2>Параметры</h2>
+  <div id="params"></div>
+
+  <h2>Расчёт</h2>
+  <div class="ctl">
+    <label>где считать<span class="val" id="backendInfo"></span></label>
+    <select id="backend">
+      <option value="cpu" selected>CPU — JS, float64</option>
+      <option value="gpu">GPU — WebGPU, float32</option>
+    </select>
+    <div class="hint" id="backendHint"></div>
+  </div>
+  <div class="ctl">
+    <label>сетка<span class="val" id="gridInfo"></span></label>
+    <select id="resolution">
+      <option value="128" selected>128×128 — реальное время на CPU</option>
+      <option value="256">256×256 — CPU ещё тянет</option>
+      <option value="512">512×512 — на CPU уже слайд-шоу</option>
+      <option value="1024">1024×1024 — только GPU</option>
+    </select>
+    <div class="hint">
+      Число ячеек растёт как n², а шаг у KP/ZK ещё и падает как 1/n:
+      1024² против 128² — это ×64 работы на шаг и ×8 шагов на ту же
+      физическую секунду.
+    </div>
+  </div>
+  <div class="ctl">
+    <label>темп</label>
+    <select id="tempo">
+      <option value="6">медленно</option>
+      <option value="14" selected>обычно</option>
+      <option value="30">быстро</option>
+    </select>
+  </div>
+  <div class="ctl">
+    <label>рельеф<span class="val"></span></label>
+    <input type="range" id="relief" min="0" max="2.5" step="0.1" value="1">
+  </div>
+  <div class="row">
+    <button id="playPause">⏸ пауза</button>
+    <button id="clear">очистить</button>
+  </div>
+  <div class="legend"><code>пробел</code> — пауза, <code>c</code> — очистить</div>
+
+  <h2>Инварианты</h2>
+  <div id="stats"></div>
+  <div class="legend">
+    Сохраняющиеся величины считаются на лету: если они «поехали»,
+    значит шаг слишком велик, а не физика такая. На GPU они читаются
+    асинхронно — первые кадры после сценария показывают нули.
+  </div>
+</aside>
+
+<main>
+  <div id="stage">
+    <canvas id="view" width="820" height="820"></canvas>
+    <canvas id="viewGpu" class="off" width="820" height="820"></canvas>
+    <canvas id="overlay" width="820" height="820"></canvas>
+  </div>
+  <div id="note"></div>
+</main>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

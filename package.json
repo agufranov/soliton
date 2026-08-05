@@ -1,0 +1,19 @@
+{
+  "name": "soliton",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Interactive 2D soliton simulations: KP-I lumps, NLS light bullets, Zakharov-Kuznetsov, sine-Gordon",
+  "scripts": {
+    "start": "node serve.mjs",
+    "verify": "node tools/verify.mjs",
+    "residual": "node tools/residual.mjs",
+    "gpu-check": "node tools/gpu-check.mjs",
+    "gpu-profile": "node tools/gpu-profile.mjs",
+    "gpu-stability": "node tools/gpu-stability.mjs",
+    "bench": "node tools/bench.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.62.1"
+  }
+}
