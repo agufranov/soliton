@@ -158,6 +158,7 @@ function buildModel(id, keepParams = false) {
   buildSolver();
 
   $('blurb').textContent = model.blurb;
+  $('sheetModel').textContent = model.name;
   buildParamControls();
   buildPresetButtons();
   buildSpawnKinds();
@@ -227,6 +228,15 @@ function buildSpawnKinds() {
   }
 }
 
+// Run state lives in two places on a phone: the panel button and the mirror on
+// the sheet handle, which is the only one visible while the sheet is closed.
+// Everything that pauses or resumes goes through here so the two cannot drift.
+function setRunning(on) {
+  state.running = on;
+  $('playPause').textContent = on ? '⏸ пауза' : '▶ пуск';
+  $('sheetPlay').textContent = on ? '⏸' : '▶';
+}
+
 function applyPreset(p) {
   // A preset can fail the same way a click can: no soliton exists at these
   // parameters. Without this it just left an empty box and said "сценарий: ...".
@@ -234,8 +244,7 @@ function applyPreset(p) {
   state.lastPreset = p;
   renderer.scaleSmoothed = 1;
   if (gpuRenderer) gpuRenderer.scaleSmoothed = 1;
-  state.running = true;
-  $('playPause').textContent = '⏸ пауза';
+  setRunning(true);
   note(ok === false
     ? 'профиль не сходится: солитона при таких параметрах нет'
     : `сценарий: ${p.label}`);
@@ -246,7 +255,84 @@ function note(msg) {
   state.noteUntil = performance.now() + 2600;
 }
 
-// --- mouse -----------------------------------------------------------------
+// --- mobile sheet ----------------------------------------------------------
+// On a phone the panel is a bottom sheet: the same <aside>, translated down
+// until only its handle (#sheetBar) shows. Open/closed is one class; the CSS
+// media query is what decides whether any of this is visible at all, so on a
+// desktop these handlers simply never fire - #sheetBar is display:none there.
+const panel = document.querySelector('aside');
+const sheetBar = $('sheetBar');
+// The single query that decides whether the panel is a sheet at all - it has
+// to match the media query in index.html exactly.
+const sheetLayout = matchMedia('(max-width: 860px) and (orientation: portrait)');
+
+function sheetIsOpen() { return panel.classList.contains('open'); }
+
+function setSheet(open) {
+  panel.classList.toggle('open', open);
+  sheetBar.setAttribute('aria-expanded', String(open));
+  // Closing with the content scrolled would leave the sticky handle sitting on
+  // top of some random middle of the panel next time it opens.
+  if (!open) panel.scrollTop = 0;
+}
+
+// How far down the sheet sits when collapsed, in pixels. Measured rather than
+// computed: the resting offset is `--peek` plus the safe-area inset, and
+// env() read back through getComputedStyle is not something to rely on. The
+// sheet always starts closed, so the first drag measures the real number and
+// every later one reuses it.
+let collapsedSpan = null;
+
+function sheetSpan() {
+  const openTop = window.innerHeight - panel.offsetHeight;   // where translateY(0) puts it
+  const now = panel.getBoundingClientRect().top - openTop;
+  if (!sheetIsOpen() && now > 20) collapsedSpan = now;
+  if (collapsedSpan != null) return collapsedSpan;
+  const peek = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--peek'));
+  return panel.offsetHeight - (Number.isFinite(peek) ? peek : 62);
+}
+
+// Drag-to-open. The sheet follows the finger (transition off, transform set
+// inline) and snaps on release; a move shorter than a few pixels is a tap and
+// just toggles. Without this the handle is a button that happens to look like
+// a sheet, which reads as broken on a touch screen.
+let sheetDrag = null;
+
+sheetBar.addEventListener('pointerdown', (ev) => {
+  if (ev.target.closest('button')) return;      // the play mirror is not a grip
+  sheetBar.setPointerCapture(ev.pointerId);
+  sheetDrag = { y0: ev.clientY, dy: 0, open: sheetIsOpen(), span: sheetSpan() };
+  panel.classList.add('dragging');
+});
+
+sheetBar.addEventListener('pointermove', (ev) => {
+  if (!sheetDrag) return;
+  sheetDrag.dy = ev.clientY - sheetDrag.y0;
+  const base = sheetDrag.open ? 0 : sheetDrag.span;
+  const y = Math.max(0, Math.min(sheetDrag.span, base + sheetDrag.dy));
+  panel.style.transform = `translateY(${y}px)`;
+});
+
+function endSheetDrag() {
+  if (!sheetDrag) return;
+  const d = sheetDrag;
+  sheetDrag = null;
+  panel.style.transform = '';
+  panel.classList.remove('dragging');
+  setSheet(Math.abs(d.dy) < 8 ? !d.open : d.dy < 0);
+}
+sheetBar.addEventListener('pointerup', endSheetDrag);
+sheetBar.addEventListener('pointercancel', endSheetDrag);
+sheetBar.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); setSheet(!sheetIsOpen()); }
+});
+
+$('sheetPlay').addEventListener('click', (ev) => {
+  ev.stopPropagation();               // …and not a toggle of the sheet
+  setRunning(!state.running);
+});
+
+// --- mouse and touch --------------------------------------------------------
 const stage = $('stage');
 
 function canvasToWorld(ev) {
@@ -261,6 +347,9 @@ function canvasToWorld(ev) {
 
 stage.addEventListener('pointerdown', (ev) => {
   stage.setPointerCapture(ev.pointerId);
+  // Touching the field means you are done with the panel: on a phone the open
+  // sheet covers the lower two thirds of what you are aiming at.
+  if (sheetIsOpen()) setSheet(false);
   const w = canvasToWorld(ev);
   state.drag = { start: w, current: w };
 });
@@ -326,10 +415,7 @@ $('tempo').addEventListener('change', (e) => {
   savePrefs();
 });
 
-$('playPause').addEventListener('click', () => {
-  state.running = !state.running;
-  $('playPause').textContent = state.running ? '⏸ пауза' : '▶ пуск';
-});
+$('playPause').addEventListener('click', () => setRunning(!state.running));
 $('clear').addEventListener('click', () => {
   state.solver.clear();
   state.lastPreset = null;
@@ -342,6 +428,24 @@ $('relief').addEventListener('input', (e) => {
   if (gpuRenderer) gpuRenderer.relief = Number(e.target.value);
   savePrefs();
 });
+
+// --- the stage box can change without a rebuild ------------------------------
+// Both the aim overlay and the WebGPU canvas size their backing store from the
+// element's CSS box, and until now that was only ever read inside buildSolver.
+// Rotating a phone changes the box without touching the solver: the arrow then
+// gets drawn into a stale buffer and the GPU picture is resampled from the old
+// size. Debounced, because an orientation change fires a burst of these and
+// reallocating a 1024^2-sized canvas per event is not free.
+let resizeTimer = 0;
+function onViewportResize() {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    aim.resize();
+    if (usingGpu() && gpuRenderer && state.grid) gpuRenderer.resizeFor(state.grid);
+  }, 150);
+}
+window.addEventListener('resize', onViewportResize);
+window.addEventListener('orientationchange', onViewportResize);
 
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
@@ -389,8 +493,7 @@ function frame() {
   const guard = state.model.collapseGuard;
   const bad = !Number.isFinite(peak) || (guard && peak > guard);
   if (bad && state.running) {
-    state.running = false;
-    $('playPause').textContent = '▶ пуск';
+    setRunning(false);
     note(guard
       ? 'коллапс: амплитуда ушла в бесконечность за конечное время'
       : 'решение разошлось — уменьши шаг или амплитуду');
@@ -419,13 +522,23 @@ function frame() {
     );
   }
 
+  const num = (v) => (Number.isFinite(v) ? v.toFixed(4) : '—');
   $('stats').innerHTML =
     `<div><span>t</span><b>${state.solver.time.toFixed(2)}</b></div>`
-    + Object.entries(d).map(([k, v]) =>
-      `<div><span>${k}</span><b>${Number.isFinite(v) ? v.toFixed(4) : '—'}</b></div>`).join('')
+    + Object.entries(d).map(([k, v]) => `<div><span>${k}</span><b>${num(v)}</b></div>`).join('')
     + `<div><span>мс/шаг</span><b>${state.msPerStep.toFixed(2)}</b></div>`
     + `<div><span>шагов/кадр</span><b>${state.stepsPerFrame}</b></div>`
     + `<div><span>fps</span><b>${fps.toFixed(0)}</b></div>`;
+
+  // The chips under the field on a phone. `matches` on a stored MediaQueryList
+  // is a plain flag read - no layout, unlike asking the element whether it is
+  // displayed - so this stays a cheap per-frame check.
+  if (sheetLayout.matches) {
+    $('miniStats').innerHTML =
+      `<span class="chip">t <b>${state.solver.time.toFixed(1)}</b></span>`
+      + Object.entries(d).map(([k, v]) => `<span class="chip">${k} <b>${num(v)}</b></span>`).join('')
+      + `<span class="chip">fps <b>${fps.toFixed(0)}</b></span>`;
+  }
 
   $('note').textContent = performance.now() < state.noteUntil ? state.note : '';
   requestAnimationFrame(frame);
@@ -451,11 +564,21 @@ function frame() {
       : 'WebGPU в этом браузере недоступен — доступен только CPU.';
 
   // A grid saved while on the GPU can be ruinous on the CPU: 1024^2 there is
-  // over a second per step. Restore it only if we actually got the GPU.
+  // over a second per step. Restore it only if we actually got the GPU - and
+  // on a phone go one notch lower still on both paths: the CPU there is a
+  // fraction of a laptop's, and a 1024^2 GPU solver is ~100 MB of device
+  // buffers on a chip that shares its memory with everything else.
+  // This caps only what is *restored*; every grid stays selectable by hand.
+  const phone = matchMedia('(pointer: coarse) and (max-width: 900px)').matches;
+  const cap = state.backendKind === 'gpu' ? (phone ? 512 : 1024) : (phone ? 128 : 256);
   const savedN = Number(prefs.resolution);
   if ([128, 256, 512, 1024].includes(savedN)) {
-    state.resolution = state.backendKind === 'gpu' ? savedN : Math.min(savedN, 256);
-    if (state.resolution !== savedN) note(`сетка ${savedN}² сохранена, но без GPU это секунды на кадр — открываю ${state.resolution}²`);
+    state.resolution = Math.min(savedN, cap);
+    if (state.resolution !== savedN) {
+      note(phone && state.backendKind === 'gpu'
+        ? `сетка ${savedN}² сохранена, но это телефон — открываю ${state.resolution}²`
+        : `сетка ${savedN}² сохранена, но без GPU это секунды на кадр — открываю ${state.resolution}²`);
+    }
   }
   $('resolution').value = String(state.resolution);
 
@@ -472,6 +595,10 @@ function frame() {
   const model = MODELS.some((m) => m.id === prefs.model) ? prefs.model : MODELS[0].id;
   $('model').value = model;
   buildModel(model);
+  // On a phone the legend explaining what a tap does is inside the collapsed
+  // sheet, i.e. invisible until you already know to open it. This replaces the
+  // "сценарий: ..." note that buildModel just raised, which matters less.
+  if (phone && !prefs.model) note('тап — солитон, протяжка — бросок');
   savePrefs();
   requestAnimationFrame(frame);
 })();
