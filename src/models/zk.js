@@ -21,7 +21,9 @@ const cache = new Map();
 // Solitary wave of speed c: solves  laplacian(phi) - c*phi + 3*phi^2 = 0.
 // Solved on at most PROFILE_N points and interpolated up; see petviashvili.js.
 function zkProfile(grid, c) {
-  const key = `${grid.nx}:${grid.Lx}:${c.toFixed(4)}`;
+  // Ly belongs in the key: the box is not square on a phone, and two boxes
+  // with the same Lx and a different Ly give different profiles.
+  const key = `${grid.nx}:${grid.Lx}:${grid.Ly}:${c.toFixed(4)}`;
   if (cache.has(key)) return cache.get(key);
 
   const n = Math.min(grid.nx, PROFILE_N);

@@ -78,8 +78,106 @@
     button:hover { background: #1e2330; border-color: #37405a; }
   }
   button:active { background: #1e2330; border-color: #37405a; }
-  .preset, .kind { display: block; width: 100%; text-align: left; margin-bottom: 6px; font-size: 12.5px; }
+  .preset, .kind {
+    display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+    margin-bottom: 6px; font-size: 12.5px;
+  }
   .kind.on { border-color: var(--accent); color: var(--accent); }
+
+  /* --- иконки к сценариям и к «что порождает клик» (src/render/icons.js) --- */
+  .ic { width: 24px; height: 24px; flex: none; display: block; }
+  .ic .fr { fill: none; stroke: #333c52; stroke-width: 1; }
+  .ic .ln { fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linecap: round; }
+  .ic .ln2 { fill: none; stroke: #e8b07a; stroke-width: 1.6; stroke-linecap: round; }
+  .ic .mk { fill: var(--accent); }
+  .ic .mk2 { fill: #e8b07a; }
+  .ic .ar { stroke: var(--accent); stroke-width: 1.2; stroke-linecap: round; }
+
+  /* --- выбор уравнения: своя кнопка со своим списком ----------------------
+     Нативный <option> не даёт событий наведения, а превью формулы нужно
+     именно по наведению. Сам <select id="model"> остаётся в DOM скрытым: он
+     хранит значение, и через него модель переключают инструменты из tools/. */
+  #modelBox { position: relative; z-index: 6; }
+  #modelBtn {
+    width: 100%; display: flex; align-items: center; gap: 8px;
+    text-align: left; font-size: 13px;
+  }
+  #modelBtn .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #modelBtn::after { content: "▾"; margin-left: auto; color: var(--dim); }
+  #modelBtn.open { border-color: var(--accent); color: var(--accent); }
+  #modelList {
+    display: none; position: absolute; z-index: 20; top: calc(100% + 4px); left: 0;
+    width: 100%; min-width: 230px; padding: 4px; background: var(--panel-2);
+    border: 1px solid #37405a; border-radius: 8px;
+    box-shadow: 0 16px 40px rgba(0,0,0,.65);
+    max-height: min(62vh, 460px); overflow-y: auto; overscroll-behavior: contain;
+  }
+  #modelList.on { display: block; }
+  .mitem {
+    padding: 8px 9px; border-radius: 6px; cursor: pointer; font-size: 12.5px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .mitem.cur { color: var(--accent); }
+  .mitem.hi { background: #1e2939; color: #fff; }
+
+  /* Превью формулы. На десктопе — карточка сбоку от списка (позицию считает
+     main.js), на узком экране — панель внизу с кнопкой «выбрать». */
+  #eqPrev {
+    position: fixed; z-index: 40; visibility: hidden; opacity: 0;
+    transition: opacity .12s; max-width: min(430px, 44vw);
+    padding: 13px 15px; background: #141a24; border: 1px solid #37405a;
+    border-radius: 10px; box-shadow: 0 18px 46px rgba(0,0,0,.7);
+    pointer-events: none;
+  }
+  #eqPrev.on { visibility: visible; opacity: 1; }
+  #eqPrev .ptit {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--dim); margin-bottom: 9px;
+  }
+  .peq {
+    font: 17px/2.2 Cambria, Georgia, "Times New Roman", serif;
+    white-space: nowrap; overflow-x: auto; padding-bottom: 2px;
+  }
+  .peq i { font-style: italic; }
+  .peq sub { font-size: .62em; vertical-align: -.3em; }
+  .peq sup { font-size: .66em; vertical-align: .5em; }
+  /* дробь этажеркой: у насыщающейся нелинейности иначе не написать. Терм с
+     дробью обязан быть flex-строкой (.stack), иначе знаменатель вываливается
+     из подложки, а множитель ψ уезжает на верхнюю строку. */
+  .peq .frac {
+    display: inline-flex; flex-direction: column; text-align: center;
+    vertical-align: middle; font-size: .8em; line-height: 1.25;
+  }
+  .peq .fnum { border-bottom: 1px solid currentColor; padding: 0 .3em; }
+  .peq .fden { padding: 0 .3em; }
+  .tm { border-radius: 4px; padding: 2px 4px; }
+  .tm.stack { display: inline-flex; align-items: center; gap: .1em; vertical-align: middle; }
+  .k-nl { color: #e8b07a; background: rgba(232,176,122,.13); }
+  .k-disp { color: #6fb2d2; background: rgba(111,178,210,.13); }
+  .k-tr { color: #8fd07a; background: rgba(143,208,122,.13); }
+  .k-fix { color: #c79bdd; background: rgba(199,155,221,.14); }
+  .pleg { list-style: none; margin: 11px 0 0; padding: 0; font-size: 12px; color: var(--dim); }
+  .pleg li { display: flex; gap: 8px; margin-top: 7px; line-height: 1.5; }
+  .pleg b { font-weight: 400; font-family: Cambria, Georgia, serif; }
+  .pleg .dot {
+    flex: none; width: 8px; height: 8px; margin-top: 5px; border-radius: 2px;
+    background: currentColor;
+  }
+  /* Узкий экран или тач: сбоку от списка места нет, поэтому превью ложится
+     внизу во всю ширину и получает кнопку «выбрать» — первый тап по пункту
+     показывает формулу, второй (или кнопка) применяет её. Иначе на телефоне
+     формулу никто бы не увидел: выбор срабатывал бы раньше показа.
+     pointer-events включаются обратно — по превью теперь нажимают. */
+  #eqPrev .pick { display: none; }
+  #eqPrev.compact {
+    left: 10px; right: 10px; top: auto; bottom: calc(12px + var(--safe-b));
+    max-width: none; max-height: 62vh; overflow-y: auto; pointer-events: auto;
+  }
+  #eqPrev.compact .pick {
+    display: block; width: 100%; margin-top: 13px; padding: 11px;
+    border-color: var(--accent); color: var(--accent); font-size: 15px;
+    text-align: center;
+  }
 
   #stats { font-size: 12px; font-variant-numeric: tabular-nums; }
   #stats div { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px solid #1b2029; }
@@ -118,8 +216,9 @@
   @media (hover: none) and (pointer: coarse) { .kbd { display: none; } }
 
   /* Mobile only: the phone hides the sidebar, and with it the only place the
-     page said what it is. A square field on a tall screen leaves the room for
-     it anyway. */
+     page said what it is - and the only place the equation could be picked.
+     Both live in this strip above the field; main.js moves #modelBox into
+     #headSlot when the layout flips, so there is still exactly one of it. */
   #mobileHead { display: none; }
 
   /* Mobile only: a square field on a 20:9 screen leaves a band of nothing
@@ -144,7 +243,7 @@
   @media (max-width: 860px) and (orientation: portrait) {
     /* height of #mobileHead plus the gap under it, subtracted from the stage's
        vertical budget below */
-    :root { --head: 46px; }
+    :root { --head: 48px; }
 
     aside {
       position: fixed; left: 0; right: 0; bottom: 0; top: auto; z-index: 5;
@@ -186,37 +285,41 @@
     .barLabel { font-size: 12.5px; color: var(--dim); }
     .chev { display: inline-block; transition: transform .26s; font-size: 9px; }
     aside.open .chev { transform: rotate(180deg); }
-    #sheetModel {
-      margin-left: auto; color: var(--accent); font-size: 12.5px;
-      max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
     #sheetPlay {
-      flex: none; width: 46px; height: 40px; padding: 0; font-size: 14px;
+      flex: none; margin-left: auto; width: 46px; height: 40px; padding: 0; font-size: 14px;
       display: flex; align-items: center; justify-content: center;
     }
 
     aside h1, aside h1 + p { display: none; }
     aside h2:first-of-type { margin-top: 16px; }
 
-    #mobileHead { display: block; text-align: center; height: 38px; }
-    #mobileHead b { display: block; font-size: 14.5px; letter-spacing: .2px; }
-    #mobileHead span { display: block; font-size: 11px; color: var(--dim); }
+    /* Название слева, выбор уравнения справа. Уравнение — единственное, что
+       меняют чаще, чем раз за сеанс, а в шторке оно было первой строкой
+       контента, то есть невидимо, пока шторку не открыли. */
+    #mobileHead {
+      display: flex; align-items: center; gap: 10px; height: 40px;
+      position: relative; z-index: 6;
+    }
+    #mobileHead b { flex: none; font-size: 12.5px; letter-spacing: .2px; }
+    #headSlot { flex: 1; min-width: 0; }
+    #eqPrev.compact { bottom: calc(var(--peek) + var(--safe-b) + 10px); }
 
-    /* Top-aligned, not centred: the sheet opens over the bottom of the screen,
-       and the field has to survive it. Centring the stage in the tall leftover
-       put it exactly where the open sheet lands. */
+    /* The stage takes every pixel left between the header and the sheet, and
+       stops being square. The simulation box follows it: main.js reads this
+       box and builds Lx x (Lx * aspect) over the same nx = ny points. Change
+       one without the other and the field is drawn stretched. */
     main {
-      flex-direction: column; align-items: center; justify-content: flex-start;
+      flex-direction: column; align-items: stretch; justify-content: flex-start;
       gap: 8px; padding: 10px 10px calc(var(--peek) + var(--safe-b) + 10px);
     }
-    #stage { width: min(100%, calc(100vh - var(--peek) - var(--safe-b) - var(--head) - 28px)); }
-    @supports (height: 100dvh) {
-      #stage { width: min(100%, calc(100dvh - var(--peek) - var(--safe-b) - var(--head) - 28px)); }
-    }
+    #stage { width: auto; flex: 1 1 auto; min-height: 0; aspect-ratio: auto; }
     #miniStats {
-      display: flex; flex-wrap: wrap; gap: 7px; justify-content: center;
-      margin-top: auto;            /* sits just above the sheet, not adrift */
-      padding: 12px 0 4px;
+      display: flex; flex-wrap: wrap; gap: 6px; justify-content: center;
+      flex: none;                  /* every pixel it does not take is field */
+      /* Reserved before the first frame fills it. Without this the stage is
+         29 px taller at boot than a frame later, and the box gets built to a
+         shape the picture never has. */
+      min-height: 29px;
     }
 
     /* Notes go to the top: the bottom of the screen is where the sheet is.
@@ -246,6 +349,10 @@
     select { padding: 10px 9px; }
     /* 16px keeps iOS from zooming the page when a control gets focus */
     select, button { font-size: 16px; }
+    /* …but the equation names are long, and this one has to fit a phone's top
+       strip next to the title. A button is not a focus target iOS zooms. */
+    #modelBtn { font-size: 14px; padding: 9px 10px; }
+    .mitem { padding: 11px 10px; font-size: 14px; }
     .preset, .kind { font-size: 13.5px; }
     input[type=range] { height: 32px; }
     #stats div { padding: 5px 0; }
@@ -260,8 +367,9 @@
   <div id="sheetBar" role="button" tabindex="0" aria-expanded="false" aria-controls="panelBody">
     <div class="grip"></div>
     <div class="barRow">
+      <!-- название модели тут не дублируется: на телефоне оно стоит в кнопке
+           выбора уравнения над полем и видно всегда -->
       <span class="barLabel">настройки <span class="chev">▲</span></span>
-      <span id="sheetModel"></span>
       <button id="sheetPlay" type="button" aria-label="пауза или пуск">⏸</button>
     </div>
   </div>
@@ -271,7 +379,18 @@
   <p>Псевдоспектральные симуляции локализованных нелинейных волн</p>
 
   <h2>Уравнение</h2>
-  <select id="model"></select>
+  <!-- На телефоне #modelBox переезжает отсюда в #headSlot над полем; здесь
+       остаётся пустой слот. Элемент один и тот же — дубля контролов нет. -->
+  <div id="modelSlot">
+    <div id="modelBox">
+      <button id="modelBtn" type="button" aria-haspopup="listbox" aria-expanded="false">
+        <span class="nm"></span>
+      </button>
+      <div id="modelList" role="listbox" aria-label="уравнение"></div>
+      <!-- хранилище значения: его читают и пишут инструменты из tools/ -->
+      <select id="model" hidden></select>
+    </div>
+  </div>
   <div class="blurb" id="blurb"></div>
 
   <h2>Сценарии</h2>
@@ -341,7 +460,7 @@
 <main>
   <div id="mobileHead">
     <b>2D-солитоны</b>
-    <span>псевдоспектральные симуляции нелинейных волн</span>
+    <div id="headSlot"></div>
   </div>
   <div id="stage">
     <canvas id="view" width="820" height="820"></canvas>
@@ -351,6 +470,11 @@
   <div id="miniStats"></div>
   <div id="note"></div>
 </main>
+
+<!-- Превью формулы. Живёт в конце <body>, а не внутри #modelBox: карточка
+     должна ложиться поверх поля и шторки, а из панели с overflow её обрезало
+     бы. Позицию на десктопе считает main.js. -->
+<div id="eqPrev"></div>
 
 <script type="module" src="./src/main.js"></script>
 </body>

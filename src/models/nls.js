@@ -72,7 +72,9 @@ const nonlinearity = {
 
 // Solved on at most PROFILE_N points and interpolated up; see petviashvili.js.
 function nlsProfile(grid, variant, mu, q) {
-  const key = `${variant}:${grid.nx}:${grid.Lx}:${mu.toFixed(4)}:${q.toFixed(4)}`;
+  // Ly belongs in the key: the box is not square on a phone, and two boxes
+  // with the same Lx and a different Ly give different profiles.
+  const key = `${variant}:${grid.nx}:${grid.Lx}:${grid.Ly}:${mu.toFixed(4)}:${q.toFixed(4)}`;
   if (cache.has(key)) return cache.get(key);
 
   const n = Math.min(grid.nx, PROFILE_N);

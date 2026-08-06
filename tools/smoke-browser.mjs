@@ -34,6 +34,16 @@ page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
 // an init script and not an evaluate.
 await page.addInitScript(() => { try { localStorage.clear(); } catch {} });
 await page.goto(URL_, { waitUntil: 'networkidle' });
+
+// The equation picker is a hand-built listbox (it needs hover events, which a
+// native <option> does not give), and <select id="model"> is only its value
+// store - hidden, so selectOption cannot reach it. Setting the value and
+// dispatching `change` is the same path the UI takes.
+const pickModel = (id) => page.evaluate((v) => {
+  const s = document.getElementById('model');
+  s.value = v;
+  s.dispatchEvent(new Event('change'));
+}, id);
 // Pin the backend explicitly, both ways. The app now defaults to the GPU, so a
 // run that only selects 'gpu' when asked would quietly test the GPU for a
 // 'cpu' run too - which is exactly what happened when the default changed.
@@ -114,7 +124,7 @@ for (const [id, label, wait] of [
   ['nlsCubic', 'НУШ кубическое (коллапс)', 5000],
   ['sg', 'sine-Gordon', 4000],
 ]) {
-  await page.selectOption('#model', id);
+  await pickModel(id);
   await page.waitForTimeout(wait);
   await step(`05-${id}`, label);
 }

@@ -13,8 +13,10 @@ import { Grid } from './core/grid.js';
 import { CpuBackend } from './core/backend.js';
 import { requestGpuContext, WebGpuBackend } from './core/webgpuBackend.js';
 import { MODELS, modelById } from './models/index.js';
+import { formulaFor } from './models/formula.js';
 import { Renderer, AimOverlay } from './render/renderer.js';
 import { GpuRenderer } from './render/gpuRenderer.js';
+import { presetIcon, kindIcon } from './render/icons.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -95,6 +97,32 @@ function dtFor(model, n) {
   return model.dt * scale;
 }
 
+// --- box shape -------------------------------------------------------------
+// The simulation box follows the shape of the stage, not the other way round.
+// A square field on a 20:9 phone leaves a third of the screen black, and the
+// grid does not have to become rectangular to fix that: `Grid` keeps Lx and Ly
+// apart, so a portrait box is nx = ny points over Lx x (Lx * aspect). The cell
+// count is unchanged, so a step costs exactly what it cost before; what this
+// buys in screen area it pays for in vertical resolution, dy = aspect * dx.
+// That is the cheap direction to give up in the KdV-type models - y enters
+// through a second derivative where x enters through a third.
+//
+// Rectangular *grids* are the other way to do it and are not available: the
+// GPU FFT transposes in place and refuses nx != ny (webgpuBackend.js).
+//
+// The two aspects must agree. The picture maps [0,Lx] x [0,Ly] onto the stage
+// box, so a mismatch turns every lump into an ellipse and makes the aim arrow
+// point somewhere the soliton will not go.
+function stageAspect() {
+  const r = $('stage').getBoundingClientRect();
+  if (!(r.width > 0 && r.height > 0)) return 1;
+  return r.height / r.width;
+}
+
+// Coarse enough that an address bar sliding in and out cannot trigger a
+// rebuild, fine enough that a rotation always does.
+const aspectStep = (a) => Math.round(a * 20) / 20;
+
 // --- backend ---------------------------------------------------------------
 function makeBackend(grid) {
   if (state.backendKind === 'gpu' && gpuCtx) return new WebGpuBackend(gpuCtx, grid);
@@ -118,7 +146,8 @@ function buildSolver() {
   state.backend = null;
   state.grid = null;
 
-  state.grid = new Grid(n, n, model.grid.L, model.grid.L);
+  state.aspect = stageAspect();
+  state.grid = new Grid(n, n, model.grid.L, model.grid.L * state.aspect);
   state.backend = makeBackend(state.grid);
   state.solver = model.create(state.backend, state.grid, dtFor(model, n), state.params);
 
@@ -139,8 +168,11 @@ function buildSolver() {
 
   state.msPerStep = usingGpu() ? 0.5 : 8;
   state.gpuInFlight = 0;
-  $('gridInfo').textContent =
-    `${n}×${n}, L=${model.grid.L}, dx=${state.grid.dx.toFixed(3)}, dt=${dtFor(model, n).toFixed(4)}`;
+  const g = state.grid;
+  const box = g.Ly === g.Lx
+    ? `L=${g.Lx}, dx=${g.dx.toFixed(3)}`
+    : `L=${g.Lx}×${g.Ly.toFixed(1)}, dx=${g.dx.toFixed(3)}, dy=${g.dy.toFixed(3)}`;
+  $('gridInfo').textContent = `${n}×${n}, ${box}, dt=${dtFor(model, n).toFixed(4)}`;
   $('backendInfo').textContent = state.backend.name;
 }
 
@@ -158,7 +190,7 @@ function buildModel(id, keepParams = false) {
   buildSolver();
 
   $('blurb').textContent = model.blurb;
-  $('sheetModel').textContent = model.name;
+  syncModelBtn();
   buildParamControls();
   buildPresetButtons();
   buildSpawnKinds();
@@ -198,13 +230,17 @@ function buildParamControls() {
   }
 }
 
+// The icon is drawn from the preset's own items (render/icons.js), so a new
+// preset gets a picture of itself for free - and one that cannot disagree with
+// what the button does. `innerHTML` is safe here: every label in models/ is
+// ours, and the icon is a string of SVG we just generated.
 function buildPresetButtons() {
   const box = $('presets');
   box.innerHTML = '';
   for (const p of state.model.presets) {
     const b = document.createElement('button');
     b.className = 'preset';
-    b.textContent = p.label;
+    b.innerHTML = presetIcon(state.model, p) + `<span>${p.label}</span>`;
     b.addEventListener('click', () => applyPreset(p));
     box.appendChild(b);
   }
@@ -219,7 +255,7 @@ function buildSpawnKinds() {
   for (const k of kinds) {
     const b = document.createElement('button');
     b.className = 'kind' + (k.id === state.spawnKind ? ' on' : '');
-    b.textContent = k.label;
+    b.innerHTML = kindIcon(k.id) + `<span>${k.label}</span>`;
     b.addEventListener('click', () => {
       state.spawnKind = k.id;
       [...box.children].forEach((c) => c.classList.toggle('on', c === b));
@@ -372,9 +408,171 @@ stage.addEventListener('pointerup', (ev) => {
 });
 stage.addEventListener('pointercancel', () => { state.drag = null; aim.clear(); });
 
+// --- picking the equation ---------------------------------------------------
+// A hand-built listbox instead of a <select>, for one reason: a native <option>
+// raises no hover events, and the formula has to appear while you are still
+// choosing, not after. The <select id="model"> stays in the DOM as the value
+// store - tools/ set it and dispatch `change`, which is the same path the list
+// below goes through, so nothing can be selected two different ways.
+//
+// Desktop: hover an item, the card shows up beside the list.
+// Narrow or touch: the first tap shows the formula, the second (or the button
+// inside the card) applies it. Applying on the first tap would mean the formula
+// is only ever seen for the model you already left.
+const modelSel = $('model');
+const modelBtn = $('modelBtn');
+const modelList = $('modelList');
+const eqPrev = $('eqPrev');
+
+// Not `sheetLayout`: this is about where the card fits and whether hovering
+// exists at all, which is also true of a landscape phone and of a narrow
+// desktop window. The comma is "or".
+const compact = matchMedia('(hover: none), (max-width: 900px)');
+
+let hiIdx = -1;                      // пункт под курсором/пальцем, не выбранный
+
+modelSel.innerHTML = MODELS.map((m) => `<option value="${m.id}">${m.name}</option>`).join('');
+modelList.innerHTML = MODELS.map((m, i) =>
+  `<div class="mitem" role="option" data-i="${i}">${m.name}</div>`).join('');
+
+modelSel.addEventListener('change', (e) => { buildModel(e.target.value); savePrefs(); });
+
+function syncModelBtn() {
+  modelBtn.querySelector('.nm').textContent = state.model ? state.model.name : '';
+  modelSel.value = state.model ? state.model.id : MODELS[0].id;
+  markList();
+}
+
+const listOpen = () => modelList.classList.contains('on');
+
+function previewHtml(model, i) {
+  const f = formulaFor(model.id);
+  if (!f) return `<div class="ptit">${model.name}</div>`;
+  return `<div class="ptit">${model.name}</div>`
+    + `<div class="peq">${f.eq}</div>`
+    + `<ul class="pleg">${f.parts.map((p) =>
+      `<li><span class="dot k-${p.cls}"></span><span><b>${p.html}</b> — ${p.text}</span></li>`)
+      .join('')}</ul>`
+    + `<button class="pick" type="button" data-i="${i}">выбрать</button>`;
+}
+
+function showPrev(i) {
+  const el = modelList.children[i];
+  if (!el) return;
+  eqPrev.innerHTML = previewHtml(MODELS[i], i);
+  eqPrev.classList.toggle('compact', compact.matches);
+  eqPrev.classList.add('on');
+  if (compact.matches) {
+    // Место и размер карточки задаёт CSS (она внизу, во всю ширину), а вот
+    // список приходится подрезать здесь: на 375x667 карточка с разбором
+    // формулы съедает низ экрана, и половина списка ушла бы под неё. Короткий
+    // прокручиваемый список лучше длинного наполовину закрытого.
+    eqPrev.style.left = ''; eqPrev.style.top = '';
+    const top = modelList.getBoundingClientRect().top;
+    const cardTop = eqPrev.getBoundingClientRect().top;
+    modelList.style.maxHeight = `${Math.max(140, cardTop - top - 10)}px`;
+    return;
+  }
+  // Beside the list, level with the item. To the right if it fits, otherwise
+  // to the left - on a narrow desktop window the panel can sit close enough to
+  // the edge that the card would hang off screen.
+  const lr = modelList.getBoundingClientRect(), ir = el.getBoundingClientRect();
+  const w = eqPrev.offsetWidth, h = eqPrev.offsetHeight;
+  const right = lr.right + 10;
+  eqPrev.style.left = `${right + w + 8 <= innerWidth ? right : Math.max(8, lr.left - w - 10)}px`;
+  eqPrev.style.top = `${Math.max(8, Math.min(ir.top - 12, innerHeight - h - 8))}px`;
+}
+
+function hidePrev() {
+  eqPrev.classList.remove('on');
+  modelList.style.maxHeight = '';        // подрезка из showPrev, см. там
+}
+
+function markList() {
+  const cur = state.model ? MODELS.findIndex((m) => m.id === state.model.id) : -1;
+  [...modelList.children].forEach((el, i) => {
+    el.classList.toggle('hi', i === hiIdx);
+    el.classList.toggle('cur', i === cur);
+    el.setAttribute('aria-selected', String(i === cur));
+  });
+  if (hiIdx >= 0 && listOpen()) showPrev(hiIdx); else hidePrev();
+}
+
+function openList(on) {
+  modelList.classList.toggle('on', on);
+  modelBtn.classList.toggle('open', on);
+  modelBtn.setAttribute('aria-expanded', String(on));
+  // Opening highlights the current model - on a touch screen that also means
+  // its formula is already on screen without a tap.
+  hiIdx = on ? MODELS.findIndex((m) => m.id === state.model.id) : -1;
+  markList();
+  if (on && hiIdx >= 0) modelList.children[hiIdx].scrollIntoView({ block: 'nearest' });
+}
+
+function chooseModel(i) {
+  openList(false);
+  modelBtn.blur();          // иначе пробел снова откроет список, а не пустит счёт
+  modelSel.value = MODELS[i].id;
+  modelSel.dispatchEvent(new Event('change'));
+}
+
+modelBtn.addEventListener('click', () => openList(!listOpen()));
+modelList.addEventListener('pointerover', (e) => {
+  if (compact.matches) return;
+  const it = e.target.closest('.mitem');
+  if (it) { hiIdx = Number(it.dataset.i); markList(); }
+});
+// On a touch screen the finger leaves the item the moment it lands, so the
+// card must not follow it out.
+modelList.addEventListener('pointerleave', () => { if (!compact.matches) hidePrev(); });
+modelList.addEventListener('click', (e) => {
+  const it = e.target.closest('.mitem');
+  if (!it) return;
+  const i = Number(it.dataset.i);
+  if (compact.matches && hiIdx !== i) { hiIdx = i; markList(); return; }
+  chooseModel(i);
+});
+eqPrev.addEventListener('click', (e) => {
+  const b = e.target.closest('.pick');
+  if (b) chooseModel(Number(b.dataset.i));
+});
+// The card lives outside #modelBox, so a tap on it must not count as a tap
+// outside the list - the button would vanish from under the finger before the
+// click ever fired.
+document.addEventListener('pointerdown', (e) => {
+  if (listOpen() && !$('modelBox').contains(e.target) && !eqPrev.contains(e.target)) openList(false);
+});
+modelBtn.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { openList(false); return; }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!listOpen()) { openList(true); return; }
+    const step = e.key === 'ArrowDown' ? 1 : -1;
+    hiIdx = Math.max(0, Math.min(MODELS.length - 1, (hiIdx < 0 ? 0 : hiIdx) + step));
+    markList();
+    modelList.children[hiIdx].scrollIntoView({ block: 'nearest' });
+    return;
+  }
+  if (listOpen() && (e.key === 'Enter' || e.code === 'Space')) {
+    e.preventDefault();
+    if (hiIdx >= 0) chooseModel(hiIdx);
+  }
+});
+
+// On a phone the picker moves out of the sheet and up above the field: inside
+// the sheet it was the first line of content, i.e. invisible until the sheet
+// was opened. It is the same element in both places - main.js finds controls
+// by id, and a second copy would be a second source of truth.
+function placeModelBox() {
+  const box = $('modelBox');
+  const host = sheetLayout.matches ? $('headSlot') : $('modelSlot');
+  if (box.parentElement !== host) host.appendChild(box);
+  openList(false);
+}
+sheetLayout.addEventListener('change', placeModelBox);
+compact.addEventListener('change', () => openList(false));
+
 // --- controls --------------------------------------------------------------
-$('model').innerHTML = MODELS.map((m) => `<option value="${m.id}">${m.name}</option>`).join('');
-$('model').addEventListener('change', (e) => { buildModel(e.target.value); savePrefs(); });
 
 $('resolution').addEventListener('change', (e) => {
   state.resolution = Number(e.target.value);
@@ -440,8 +638,18 @@ let resizeTimer = 0;
 function onViewportResize() {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
+    // A rotation changes the shape of the box, not just its size on screen, so
+    // the grid tables and every solver coefficient have to be rebuilt. Only
+    // when the shape really moved: rebuilding drops everything but the last
+    // preset, and this fires on every address-bar twitch.
+    if (aspectStep(stageAspect()) !== aspectStep(state.aspect)) {
+      rebuildSolver();
+      note('ящик пересобран под новую форму экрана');
+      return;
+    }
     aim.resize();
     if (usingGpu() && gpuRenderer && state.grid) gpuRenderer.resizeFor(state.grid);
+    else if (state.grid) renderer.resizeFor(state.grid);
   }, 150);
 }
 window.addEventListener('resize', onViewportResize);
@@ -449,6 +657,9 @@ window.addEventListener('orientationchange', onViewportResize);
 
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  // On the equation button the keyboard belongs to the list: space opens it,
+  // arrows walk it. Pausing on space there would fire on the same keypress.
+  if (e.target === modelBtn) return;
   if (e.code === 'Space') { e.preventDefault(); $('playPause').click(); }
   if (e.key === 'c') $('clear').click();
 });
@@ -593,7 +804,8 @@ function frame() {
   }
 
   const model = MODELS.some((m) => m.id === prefs.model) ? prefs.model : MODELS[0].id;
-  $('model').value = model;
+  modelSel.value = model;
+  placeModelBox();          // до первого показа: на телефоне список живёт наверху
   buildModel(model);
   // On a phone the legend explaining what a tap does is inside the collapsed
   // sheet, i.e. invisible until you already know to open it. This replaces the
@@ -601,4 +813,13 @@ function frame() {
   if (phone && !prefs.model) note('тап — солитон, протяжка — бросок');
   savePrefs();
   requestAnimationFrame(frame);
+
+  // The box was built from the stage box as it stood before anything had been
+  // painted into it. Web fonts, the chips filling in, a scrollbar appearing -
+  // any of it moves the stage, and the box has to follow or the picture is
+  // drawn stretched. Settle once, two frames in, instead of trusting the
+  // boot-time measurement.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (aspectStep(stageAspect()) !== aspectStep(state.aspect)) rebuildSolver();
+  }));
 })();

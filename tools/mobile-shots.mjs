@@ -51,9 +51,19 @@ const measure = () => ({
   sheet: (({ y, height }) => ({ y, h: height }))(
     document.querySelector('aside').getBoundingClientRect()),
   open: document.querySelector('aside').classList.contains('open'),
+  // The physical box, straight out of the running solver.
+  box: { Lx: globalThis.__soliton.grid.Lx, Ly: globalThis.__soliton.grid.Ly },
   sheetVisible: getComputedStyle(document.getElementById('sheetBar')).display !== 'none',
-  // iOS zooms the whole page when a control smaller than 16px takes focus
-  selectFont: parseFloat(getComputedStyle(document.getElementById('model')).fontSize),
+  // iOS zooms the whole page when a control smaller than 16px takes focus.
+  // The equation is picked by #modelBtn now, not by a <select> - #model is
+  // hidden and its computed size says nothing about what a finger touches.
+  selectFont: parseFloat(getComputedStyle(document.getElementById('resolution')).fontSize),
+  // The picker moved above the field on a phone: in the sheet it was the first
+  // line of content, i.e. unreachable until the sheet was opened.
+  picker: (({ y, height, width }) => ({ y, h: height, w: width }))(
+    document.getElementById('modelBtn').getBoundingClientRect()),
+  pickerInHead: !!document.getElementById('headSlot')
+    .contains(document.getElementById('modelBox')),
   // smallest tap target among the generated controls
   minTap: Math.min(...[...document.querySelectorAll('aside button')]
     .map((b) => b.getBoundingClientRect().height).filter((h) => h > 0)),
@@ -86,7 +96,16 @@ for (const d of DEVICES) {
   const m = await page.evaluate(measure);
 
   check(d.id, 'нет горизонтального скролла', m.docW <= m.vw + 1, `doc=${m.docW} vp=${m.vw}`);
-  check(d.id, 'сцена квадратная', Math.abs(m.stage.w - m.stage.h) <= 1,
+
+  // The one check that matters most: the box the solver integrates and the box
+  // the picture is stretched into have to be the same shape. Any drift here
+  // draws round lumps as ellipses and sends them off the aim arrow, and it
+  // does it without a single error anywhere.
+  const stageA = m.stage.h / m.stage.w, boxA = m.box.Ly / m.box.Lx;
+  check(d.id, 'ящик по форме сцены', Math.abs(boxA / stageA - 1) < 0.03,
+    `ящик ${m.box.Lx}×${m.box.Ly.toFixed(1)} (${boxA.toFixed(3)}) против сцены ${stageA.toFixed(3)}`);
+  check(d.id, portrait ? 'сцена заполняет ширину' : 'сцена квадратная',
+    portrait ? m.stage.w >= m.vw - 24 : Math.abs(m.stage.w - m.stage.h) <= 1,
     `${m.stage.w.toFixed(0)}x${m.stage.h.toFixed(0)}`);
   check(d.id, 'сцена целиком на экране',
     m.stage.y >= -1 && m.stage.y + m.stage.h <= m.vh + 1 && m.stage.x >= -1,
@@ -99,7 +118,7 @@ for (const d of DEVICES) {
   check(d.id, 'селект не зумит iOS', m.selectFont >= 16, `${m.selectFont}px`);
   check(d.id, 'палец попадает по кнопкам', m.minTap >= 38, `мин ${m.minTap.toFixed(0)}px`);
   const used = (m.stage.w * m.stage.h) / (m.vw * m.vh);
-  console.log(`   поле занимает ${(used * 100).toFixed(0)}% экрана`);
+  check(d.id, 'поле занимает экран', !portrait || used > 0.6, `${(used * 100).toFixed(0)}%`);
 
   await page.screenshot({ path: `${OUT}/m-${TAG}${d.id}-01-closed.png` });
 
@@ -184,6 +203,51 @@ for (const d of DEVICES) {
     const presetBox = await page.locator('.preset').first().boundingBox();
     check(d.id, 'сценарии доступны в ландшафте', !!presetBox, presetBox ? 'да' : 'нет');
   }
+
+  // Выбор уравнения. В портрете он живёт над полем, в ландшафте — в боковой
+  // панели, но работает одинаково: тап по пункту показывает формулу, а
+  // применяет её кнопка. Тап, применяющий модель сразу, означал бы, что
+  // формулу видно только у той модели, с которой уже ушёл.
+  check(d.id, 'выбор уравнения над полем', m.pickerInHead === portrait,
+    `в шапке=${m.pickerInHead}`);
+  check(d.id, 'по кнопке уравнения можно попасть пальцем', m.picker.h >= 38,
+    `${m.picker.h.toFixed(0)}px`);
+
+  // Превью в портрете ложится над закрытой шторкой, так что шторку надо
+  // закрыть — но только если она открыта, иначе тап её как раз откроет.
+  const sheetOpen = () => page.evaluate(() =>
+    document.querySelector('aside').classList.contains('open'));
+  if (portrait && await sheetOpen()) await page.locator('#sheetBar').tap();
+  await page.waitForTimeout(350);
+  await page.locator('#modelBtn').tap();
+  await page.waitForTimeout(250);
+  await page.locator('.mitem').nth(2).tap();             // nlsSat, не текущая модель
+  await page.waitForTimeout(250);
+  const prev = await page.evaluate(() => {
+    const p = document.getElementById('eqPrev');
+    const r = p.getBoundingClientRect();
+    return {
+      on: p.classList.contains('on'), compact: p.classList.contains('compact'),
+      terms: p.querySelectorAll('.peq .tm').length,
+      pick: p.querySelector('.pick')?.getBoundingClientRect().height || 0,
+      y: r.y, bottom: r.y + r.height,
+      model: document.getElementById('model').value,
+    };
+  });
+  check(d.id, 'тап по уравнению показывает формулу',
+    prev.on && prev.compact && prev.terms >= 2,
+    `видно=${prev.on} подсвечено членов=${prev.terms}`);
+  check(d.id, 'превью помещается на экран', prev.y >= -1 && prev.bottom <= m.vh + 1,
+    `${prev.y.toFixed(0)}..${prev.bottom.toFixed(0)} из ${m.vh}`);
+  check(d.id, 'в превью есть кнопка «выбрать»', prev.pick >= 38, `${prev.pick.toFixed(0)}px`);
+  await page.screenshot({ path: `${OUT}/m-${TAG}${d.id}-07-formula.png` });
+
+  await page.locator('#eqPrev .pick').tap();
+  await page.waitForTimeout(900);
+  const picked = await page.evaluate(() => document.getElementById('model').value);
+  check(d.id, 'кнопка «выбрать» применяет уравнение', picked === 'nlsSat',
+    `${prev.model} -> ${picked}`);
+  await page.screenshot({ path: `${OUT}/m-${TAG}${d.id}-08-picked.png` });
 
   await ctx.close();
 }

@@ -29,7 +29,13 @@ if (gpu) {
     console.log('GPU недоступен'); await browser.close(); process.exit(1);
   }
 }
-await page.selectOption('#model', modelId);
+// #model is the hidden value store behind the hand-built equation picker;
+// selectOption cannot touch it, so drive it the way the UI does.
+await page.evaluate((v) => {
+  const s = document.getElementById('model');
+  s.value = v;
+  s.dispatchEvent(new Event('change'));
+}, modelId);
 if (res !== '128') await page.selectOption('#resolution', res);
 await page.waitForTimeout(400);
 await page.locator('#presets button').nth(Number(presetIdx)).click();

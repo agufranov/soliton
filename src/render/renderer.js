@@ -25,6 +25,17 @@ export class Renderer {
       this.image = this.bctx.createImageData(grid.nx, grid.ny);
     }
     this.grid = grid;
+
+    // Match the backing store to the box the canvas is stretched into. It used
+    // to be a fixed 820x820 no matter what, which was harmless while the stage
+    // was square and is not any more: the field is blown up to 820 and then
+    // squeezed back by CSS to whatever shape the stage has, resampling twice.
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.round(this.canvas.clientWidth * dpr) || 820;
+    const h = Math.round(this.canvas.clientHeight * dpr) || 820;
+    if (this.canvas.width !== w || this.canvas.height !== h) {
+      this.canvas.width = w; this.canvas.height = h;
+    }
   }
 
   // kind: 'height' | 'intensity' | 'phase'
